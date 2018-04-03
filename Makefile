@@ -4,8 +4,8 @@
 TARGET_BASE_NAME = boot_jack
 
 ARCH = AVR_MEGA
-F_CPU = 32000000
-F_USB = 48000000
+F_CPU = 16000000
+# F_USB = 48000000
 
 # Output format. (can be srec, ihex, binary)
 FORMAT = ihex
@@ -32,7 +32,8 @@ include avr-makefile/boards.mk
 #                         programmer options                          #
 #######################################################################
 
-AVRDUDE_CMD=avrdude -p $(AVRDUDE_PART) -c avrispmkII
+# AVRDUDE_CMD=avrdude -p $(AVRDUDE_PART) -c avrispmkII
+AVRDUDE_CMD=avrdude -p $(MCU) -c usbasp
 
 #######################################################################
 #                           compiler setup                            #
@@ -42,8 +43,9 @@ CFLAGS +=
 
 # List C source files here.
 C_SRC += \
-	main.c \
+	main.c
 	# bootjack.c
+	 # src/bootjack.c
 
 # List Assembler source files here.
 # NOTE: Use *.S for user written asm files. *.s is used for compiler generated
@@ -67,7 +69,12 @@ LD_SCRIPT_DIR = /usr/lib/ldscripts
 
 all: hex fuse
 
+program-dfu: $(TARGET_HEX)
+	dfu-programmer $(MCU) erase --force
+	dfu-programmer $(MCU) flash $(TARGET_HEX)
+	dfu-programmer $(MCU) start
 include avr-makefile/avr.mk
+include avr-makefile/avr-program.mk
 
 # Listing of phony targets.
 .PHONY : all begin finish end sizebefore sizeafter gccversion \
