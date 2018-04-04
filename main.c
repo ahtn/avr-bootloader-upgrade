@@ -8,31 +8,20 @@
 #include <avr/wdt.h>
 #include <util/delay.h>
 
-#define SPIFbit 7
-#define SPR (1<<0)
-
-// #define kSpmCsr 0x37
-// #define kSpmCsrMem (kSpmCsr+0x20)
-
 #define kSpmCsr (_SFR_IO_ADDR(SPMCSR))
 #define kSpmCsrMem (kSpmCsr+0x20)
 
 #define IOAddrInsMask(aPort) (((aPort&0x30)<<5)|(aPort&7))
 
-// #define kBootloaderStart 0x7800
-// #define kMicroBootStart 0x7f80
-// #define kBootloaderEnd 0x8000
-
-#define kBootloaderStart 0x7000
+#define BOOTLOADER_START 0x7000
+#define BOOTLOADER_END 0x8000
 #define kMicroBootStart 0x7f80
-#define kBootloaderEnd 0x8000
 
 #define kStsIns 0x9200
 #define kStsRegMask 0x01f0
 #define kOutSpmCsrIns (0xb800 + IOAddrInsMask(kSpmCsr))
 #define kOutSpmCsrRegMask 0x01f0
 #define kSpmIns 0x95e8
-
 
 #define kFlashPageSize (1<<kFlashPageSizeBits)
 #define kFlashPageSizeInWords (1<<(kFlashPageSizeBits-1))
@@ -50,7 +39,6 @@
 #define kFlashSpmRwws (kFlashSpmRwwsReMask|kFlashSpmEnMask)
 #define kFlashSpmRwwsBusy (kFlashSpmRwwsBusyMask)
 
-
 // NOTE: Uses even numbers for ideal configurations, odd numbers for suboptimal
 typedef enum {
     SPM_TYPE_STS_IDEAL = 0,
@@ -60,28 +48,6 @@ typedef enum {
     SPM_TYPE_NONE = 7
 } spm_type;
 
-typedef union {
-    struct {
-        uint8_t zl;
-        uint8_t zh;
-        uint8_t rz;
-		uint8_t res;
-    };
-    uint32_t addr_32;
-} ADD_T;
-
-extern uint8_t _etext;
-// extern void _Upgrader(void);
-// extern uint8_t _UpgradeSpmLeap;
-
-uint8_t _UpgradeSpmLeap_TODO(void) {
-    return 0;
-}
-
-// TODO: check what this value needs to be
-// uint8_t _etext_place_holder = 0;
-uint8_t _etext_place_holder = 0;
-
 uint16_t gSpmSequenceAddr;
 
 const uint8_t gBootloaderJmpVector[] = {
@@ -90,12 +56,11 @@ const uint8_t gBootloaderJmpVector[] = {
     0x00, 0x00              // A nop instruction.
 };
 
-
-uint8_t FindSpm(void) {
+uint8_t search_for_spm(void) {
     uint8_t spmType = SPM_TYPE_NONE;
     uint16_t addr;
 
-    for( addr=kBootloaderStart; addr < kBootloaderEnd; addr+=2) {
+    for( addr=BOOTLOADER_START; addr < BOOTLOADER_END; addr+=2) {
         if ((spmType & 1) == 0) {
             break;
         }
@@ -118,6 +83,14 @@ uint8_t FindSpm(void) {
             }
         }
 
+
+        // kSpmCsr (_SFR_IO_ADDR(SPMCSR))
+        // kSpmCsrMem (kSpmCsr+0x20)
+        // IOAddrInsMask(aPort) (((aPort&0x30)<<5)|(aPort&7))
+        // kOutSpmCsrIns (0xb800 + IOAddrInsMask(kSpmCsr))
+        // kOutSpmCsrRegMask 0x01f0
+        // kSpmIns 0x95e8
+        //
         // OUT A, Rr:
         // 16-bit Opcode
         // 1011 1AAr rrrr AAAA
@@ -126,13 +99,6 @@ uint8_t FindSpm(void) {
         //
         // A  = SPMCSR
         // Rr = register (r20 atmel DFU)
-
-// #define kSpmCsr (_SFR_IO_ADDR(SPMCSR))
-// #define kSpmCsrMem (kSpmCsr+0x20)
-// #define IOAddrInsMask(aPort) (((aPort&0x30)<<5)|(aPort&7))
-// #define kOutSpmCsrIns (0xb800 + IOAddrInsMask(kSpmCsr))
-// #define kOutSpmCsrRegMask 0x01f0
-// #define kSpmIns 0x95e8
 
         // out SPMCSR, R20; argument 2 decides function (r18)
         // SPM                ;Store program memory
@@ -158,7 +124,7 @@ uint8_t FindSpm(void) {
     return spmType;
 }
 
-uint16_t FlashLpmData(uint16_t addr, uint8_t spmCmd) {
+uint16_t flash_lpm_data(uint16_t addr, uint8_t spmCmd) {
     uint16_t val;
     asm volatile(
         "push r0\n" // save registers
@@ -167,30 +133,45 @@ uint16_t FlashLpmData(uint16_t addr, uint8_t spmCmd) {
         "push r30\n"
         "push r31\n"
 
-        "movw r30,%1\n"  // set the addr to be written.
-        "1: in r16,%3\n" //
+        "movw r30,%[addr]\n"  // set the addr to be written.
+        "1: in r16,%[SPM_CSR] \n" //
         "sbrc r16,0\n"   //wait for operation complete.
         "rjmp 1b\n"
         "cli\n"
-        "out %3,%2\n"
-        "lpm %0,Z\n"     // now we start the load/erase/write.
+        "out %[SPM_CSR],%[spmCmd]\n"
+        "lpm %[val], Z\n"     // now we start the load/erase/write.
         "sei\n"
 
         "pop r31\n" // restore registers
         "pop r30\n"
         "pop r16\n"
         "pop r1\n"
-        "pop r0\n" : "=r" (val): "r" (addr), "r" (spmCmd), "I" (kSpmCsr)
+        "pop r0\n"
+            : [val] "=r" (val)          // %0
+            : [addr] "r" (addr),        // %1
+            [spmCmd] "r" (spmCmd),      // %2
+            [SPM_CSR] "I" (kSpmCsr)     // %3
     );
     return val;
 }
 
-// Check if the lock bits are set. Hang if they are invalid.
-uint8_t CheckBootLock(void) {
-    uint16_t bootLockBits;
-    bootLockBits = FlashLpmData(1, kFlashSpmBlbSet);
+#define BLB1_MASK 0x30 // controls access of bootloader section
+#define BLB0_MASK 0x0C // controls access of application section
+#define BLB_MASK 0x03 // controls access from external progarmmer
 
-    if( (bootLockBits&0x3f) != 0x3f) {
+// Check lock bits. We need to be able to do the following things:
+// 1. Use the SPM instruction to write to the bootloader.
+// 2. From the application section, be allowed to read the bootloader code.
+// 3. When executing from the bootloader, allow interrupt code stored in the
+//    application section to execute
+//
+// This means we need full access to the bootloader (i.e. both bits
+// a BLB1 need to be unprogrammed).
+uint8_t check_bootloader_lock_bits(void) {
+    uint16_t bootLockBits;
+    bootLockBits = flash_lpm_data(1, kFlashSpmBlbSet);
+
+    if( (bootLockBits & BLB1_MASK) != BLB1_MASK) {
         return -1;
     }
 
@@ -203,21 +184,11 @@ void SetupTimer0B(uint8_t cycles) {
     TCCR0B = 0;       // stop the timer.
     TCCR0A = 0;       // mode 0, no OCR outputs.
     TCNT0 = 0;        // reset the timer
-
-    // clear all pending timer0 interrupts.
-    TIFR0 = (1<<OCF0B) | (1<<OCF0A) | (1<<TOV0);
-
-    OCR0B = cycles;   // 40 clocks from now (40 in test, 31 for real).
-
-    // OCR0B interrupt enabled.
-    TIMSK0 = (1<<OCIE0B);
+    TIFR0 = (1<<OCF0B) | (1<<OCF0A) | (1<<TOV0); // clear all pending timer0 interrupts.
+    OCR0B = cycles; // number of cycles to wait
+    TIMSK0 = (1<<OCIE0B); // OCR0B interrupt enabled.
 #elif defined (__AVR_ATmega168__)
     // Note: Pretty sure Fignition which bootjacker was made for uses ATmega168
-
-    // clear PCINT2.
-    PCICR &= ~(1<<PCIE2);     // disable PCINT2 interrupts.
-    PCIFR |= (1<<PCIE2);      // clear any pending PCINT2 interrupts.
-
     TCCR0B = 0;       // stop the timer.
     TCCR0A = 0;       // mode 0, no OCR outputs.
     TCNT0 = 0;        // reset the timer
@@ -230,17 +201,43 @@ void SetupTimer0B(uint8_t cycles) {
 
 }
 
-void SpmLeapCmd(uint16_t addr, uint8_t spmCmd, uint16_t optValue) {
+// Found this value by experimentation.
+// This value should be chosen so the timer0 interrupt will be called on the
+// instruction immediately following the SPM instruction.
+#define SPM_LEAP_CYCLE_COUNT 40
+
+// This function will call the SPM instruction we found in the bootloader
+// while setting `R0:R1` <- `optValue` and `Z` <- `addr`.
+//
+// Note:  I'm not sure if this function will work correctly if it tries to
+// modify a value in the application space.
+// If the SPM instruction targets the bootloader section, then the CPU will
+// be halted while she SPM operation is executed, however if the SPM instruction
+// targets the application space, then code will continue executing in the
+// bootloader. However the application code cannot be read while the SPM
+// operation is executing, therefore it is necessary for the code to wait for
+// the SPM instruction to finish executing before returning to the application
+// space.
+//
+// We only want to update code in the bootloader, should not be an issue, but
+// if we did want to do this, we would need to write our own SPM instruction
+// into the bootloader space which includes a loop to wait for the SPM
+// instruction to finish.
+void spm_leap_cmd(uint16_t addr, uint8_t spmCmd, uint16_t optValue) {
     uint8_t cmdReg, tmp=0;
 
     const uint8_t spmaddr_zl = (gSpmSequenceAddr >> 0) & 0xff;
     const uint8_t spmaddr_zh = (gSpmSequenceAddr >> 8) & 0xff;
+    // Will probably need this for devices that have more than 128kb flash
     // const uint8_t spmaddr_rz = (gSpmSequenceAddr >> 16) & 0xff;
     const uint8_t spmaddr_rz = 0;
 
     // Assume that the instruction before SPM is `OUT SPMCSR, rXX`
+    // Or it is using STS SPMCSR, rXX.  Need to extract the rXX from
+    // the instruction.  It's in the same place for both opcodes:
+    //1001 001d dddd 0000
     cmdReg = (uint8_t)(
-        (pgm_read_word(gSpmSequenceAddr)>>4)&0x1f
+        (pgm_read_word(gSpmSequenceAddr)>>4) & 0x1f
     );
 
     PINC|=(1<<4);
@@ -347,10 +344,13 @@ void SpmLeapCmd(uint16_t addr, uint8_t spmCmd, uint16_t optValue) {
 // timer we will add later.
 ISR(TIMER0_COMPB_vect, ISR_NAKED) { // OCR0B
 
-    // while (1) {
-    //     PORTF ^= (_BV(6));
-    //     _delay_ms(500);
-    // }
+#if 0
+    // Debug code to check if the ISR is being called
+    while (1) {
+        PORTF ^= (_BV(6));
+        _delay_ms(500);
+    }
+#endif
 
     asm volatile(
         "ldi r30,0\n"
@@ -368,47 +368,34 @@ ISR(TIMER0_COMPB_vect, ISR_NAKED) { // OCR0B
     );
 }
 
-// NOTE: looks like this function:
-// * Loads the 128 bytes from `src` into the temporary buffer
-// * Erase the page at `dst`
-// * Writes the page at `dst`
-void ProgPage(const uint8_t *src, uint16_t dst) {
-    uint8_t addr;
-    uint16_t data = 0xffff;
 
-    // TODO: Not sure what the purpose of this is, probably just to print
-    // whatever src points to
-    // ShowProgSrc(src);
-
-    for(addr=0; addr<128; addr+=2) {        // 64 words.
-        // data = pgm_read_word(*(uint16_t*)src);
-        data = *((uint16_t*)src);
-        SpmLeapCmd(dst+addr, kFlashSpmEn, data);
+// Write the data in src to the address at
+void flash_write_page(const uint8_t *src, uint16_t dst, uint8_t length) {
+    // Fill the temporary buffer for the page write
+    for(uint8_t addr=0; addr < length; addr+=2) {        // 64 words.
+        uint16_t data = *((uint16_t*)src);
+        spm_leap_cmd(dst+addr, kFlashSpmEn, data);
         src+=2; // advance to next word
     }
 
-    // ShowProgProgress((uint8_t*)dst,128); TODO: probably more debugging print code
-    SpmLeapCmd(dst, kFlashSpmErase, data);
-
-    // // ShowProgContents(gMigrateSpmErased, (uint8_t*)dst, 128);
-    SpmLeapCmd(dst, kFlashSpmWritePage, data);
-
-    // ShowProgContents(gMigrateSpmWritten, (uint8_t*)dst, 128);
+    // Erase and write the target page
+    spm_leap_cmd(dst, kFlashSpmErase, 0);
+    spm_leap_cmd(dst, kFlashSpmWritePage, 0);
 }
 
-void BootJacker(void) {
+void bootloader_upgrade(void) {
 
-    // // Check the bootloader lock bits, if incompatible lock bits are found
-    // // then don't run the bootloader upgrade procedure
-    // if (CheckBootLock()) {
-    //     // TODO: print error message
-    //     while (true) { }
-    // }
+    // TODO: hang and print error message print error message/LEDs
+    // Check the bootloader lock bits, if incompatible lock bits are found
+    // then don't run the bootloader upgrade procedure
+    if (check_bootloader_lock_bits()) {
+        while (true) { }
+    }
 
-    uint8_t spmType = FindSpm();
+    // Find the SPM instruction and what the surrounding instructions are.
+    uint8_t spmType = search_for_spm();
 
-    // if (spmType == SPM_TYPE_NONE) {
-    if (spmType != SPM_TYPE_OUT_IDEAL) {
+    if (spmType == SPM_TYPE_NONE) {
         // If we didn't find an SPM instruction, hang here and blink both
         // LEDs.
         while (1) {
@@ -418,91 +405,43 @@ void BootJacker(void) {
         }
     }
 
-
-    sei();
-#define kTestTimerWait 40
+    sei(); // Need interrupts enabled
     if (spmType == SPM_TYPE_STS_SECONDARY || spmType == SPM_TYPE_STS_IDEAL) {
-        SetupTimer0B(kTestTimerWait);   // sts timing.
+        SetupTimer0B(SPM_LEAP_CYCLE_COUNT);   // sts timing.
     } else {
-        SetupTimer0B(kTestTimerWait-1); // out timing is one cycle less.
+        SetupTimer0B(SPM_LEAP_CYCLE_COUNT-1); // out timing is one cycle less.
     }
 
 
 #define TEST_PAGE_ADDR 0x6F80
 
-    ProgPage(gBootloaderJmpVector, 0x7F80);
+    flash_write_page(gBootloaderJmpVector, 0x7E00, sizeof(gBootloaderJmpVector));
 
-    cli();
-    while (1);
-
-    if (spmType==SPM_TYPE_STS_IDEAL || SPM_TYPE_OUT_IDEAL) {
-        // program the micro boot.
-        ProgPage((uint8_t*)&_etext_place_holder, kMicroBootStart);
-        // ProgPage((uint8_t*)gBootloaderJmpVector, 0x7E00);
-
-        // cli();
-        // while (1);
-
-        OCR0B = kTestTimerWait-1; // it's an out command now.
-
-        //
-        gSpmSequenceAddr=(uint16_t)&_UpgradeSpmLeap_TODO;
-
-        // program the jump vector using the microboot spm.
-        ProgPage((uint8_t*)gBootloaderJmpVector, kBootloaderStart);
-    }
-
-    // } else {
-    //     // program the jump vector.
-    //     ProgPage((uint8_t*)gBootloaderJmpVector, kBootloaderStart);
-
-    //     OCR0B = kTestTimerWait-1; // it's an out command now.
-    //     gSpmSequenceAddr = kBootloaderStart+4;    // it's just after the boot vector.
-
-    //     // program the micro boot using the jump vector spm.
-    //     // ProgPage((uint8_t*)&_etext, kMicroBootStart);
-    //     ProgPage((uint8_t*)&_etext_place_holder, kMicroBootStart);
-    // }
-
-    // NOTE: Looks like this code setups up some values, then calls the function
-    // _Upgrader which is used to actually write the payload using the code from
-    // kMicroBootStart
-    // TODO: probably replace this with our own code
-#if 0
-    asm volatile(
-        "ldi r30, 0\n"
-        "ldi r31, 0\n"
-        "ldi r16, (1<<3) | (1<<5) | (1<<1) | (1<<2)\n"
-        "out %0, r16\n"  // PORTB.0 and B.4 inputs, B.1, B.2, B.3, B.5 outputs."
-        "ldi r16, (1<<3) | (1<<5) | (1<<1) | (1<<2)\n"// ;Select Flash, not SRAM."
-        "out %1, r16\n"
-        "sbi %2, 7\n"    // PORTD.7 output"
-        "cbi %3, 7\n"    // outputting 0. Ready to read"
-        "jmp _Upgrader\n"
-            :
-            : "I" (kDDRB), "I" (kPORTB), "I" (kDDRD), "I" (kPORTD)
-    );
-#endif
-
+    // TODO: replace the bootloader with another bootloader that is embedded
+    // in the program HEX file.
 }
 
 #define CPU_PRESCALE(n) (CLKPR = 0x80, CLKPR = (n))
 
 int main(void) {
-    // set for 16 MHz clock
-    CPU_PRESCALE(0);
+    // Clear the pre-scaler in case it was set by fuses
+    CPU_PRESCALE(0); // set for 16 MHz clock
 
+    // Disable watch dog if it is active
     wdt_disable();
 
+    // Enable debug LEDs
     DDRF |= _BV(7) | _BV(6);
-    PORTF |= (_BV(7) | _BV(6)); // clear LED to begin with.
+    // Turn LEDs off as initial state
+    PORTF &= ~(_BV(7) | _BV(6));
 
+    // We want to make sure that interrupts are executed from the application
+    // section not the bootloader. In case the bootloader set IVSEL to 1, we
+    // clear it here.
     {
-        // NOTE: JTD, PUD are also cleared here but we don't care in this case
-        /* Enable change of interrupt vectors */
-        MCUCR = (1<<IVCE);
-        /* Move interrupts to application flash section */
-        MCUCR = (0<<IVCE) | (0<<IVSEL);
+        // NOTE: JTD, PUD are also cleared here but we don't care
+        MCUCR = (1<<IVCE); // Enable change of interrupt vectors
+        MCUCR = (0<<IVCE) | (0<<IVSEL); // Clear IVSEL, i.e. interrupts from app section
 
         if ( (MCUCR & (1<<IVSEL)) != 0 ) {
             // Interrupts must be place at the start of flash. If that is not
@@ -516,10 +455,9 @@ int main(void) {
 
     _delay_ms(100);
 
-    sei();
+    bootloader_upgrade();
 
-    BootJacker();
-
+    // If we finish, wait forever
     cli();
-    while (1);
+    while(1);
 }
