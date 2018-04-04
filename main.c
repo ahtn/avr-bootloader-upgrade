@@ -84,7 +84,7 @@ uint8_t _etext_place_holder = 0;
 
 uint16_t gSpmSequenceAddr;
 
-const __flash uint8_t gBootloaderJmpVector[] = {
+const uint8_t gBootloaderJmpVector[] = {
     0x0c, 0x94, 0xc0, 0x3f, // A vector to the 128b mini Bootloader.
     0x57, 0xbf, 0xe8, 0x95, // An out, spm command.
     0x00, 0x00              // A nop instruction.
@@ -199,19 +199,7 @@ uint8_t CheckBootLock(void) {
 
 void SetupTimer0B(uint8_t cycles) {
 
-// #if defined (__AVR_ATmega32U4__)
-#if 1
-    // TODO: Available timers depend on the chip being used. Need to check the
-    // settings for ATmega32u4.
-
-#if 1
-    // Probably not really necessary, but keep for now
-    // clear PCINT2.
-    PCICR &= ~(1<<PCIE0);     // disable PCINT2 interrupts.
-    PCIFR |= (1<<PCIE0);      // clear any pending PCINT2 interrupts.
-#endif
-
-
+#if defined (__AVR_ATmega32U4__)
     TCCR0B = 0;       // stop the timer.
     TCCR0A = 0;       // mode 0, no OCR outputs.
     TCNT0 = 0;        // reset the timer
@@ -236,6 +224,8 @@ void SetupTimer0B(uint8_t cycles) {
     TIFR0 = (1<<OCF0B) | (1<<OCF0A) | (1<<TOV0);  // clear all pending timer0 interrupts.
     OCR0B = cycles;   // 40 clocks from now (40 in test, 31 for real).
     TIMSK0 = (1<<OCIE0B);     // OCR0B interrupt enabled.
+#else
+#error "Current microcontroller is unsupported or untested."
 #endif
 
 }
@@ -243,17 +233,12 @@ void SetupTimer0B(uint8_t cycles) {
 void SpmLeapCmd(uint16_t addr, uint8_t spmCmd, uint16_t optValue) {
     uint8_t cmdReg, tmp=0;
 
-    // // only constants seems to work so create one here.
-    // const ADD_T spmaddr = {.addr_32 = gSpmSequenceAddr};
-
-    gSpmSequenceAddr = 0x7F80;
-    
-    // only constants seems to work so create one here.
     const uint8_t spmaddr_zl = (gSpmSequenceAddr >> 0) & 0xff;
     const uint8_t spmaddr_zh = (gSpmSequenceAddr >> 8) & 0xff;
     // const uint8_t spmaddr_rz = (gSpmSequenceAddr >> 16) & 0xff;
     const uint8_t spmaddr_rz = 0;
 
+    // Assume that the instruction before SPM is `OUT SPMCSR, rXX`
     cmdReg = (uint8_t)(
         (pgm_read_word(gSpmSequenceAddr)>>4)&0x1f
     );
@@ -271,11 +256,9 @@ void SpmLeapCmd(uint16_t addr, uint8_t spmCmd, uint16_t optValue) {
         "sbrc %[tmp],0\n"
         "rjmp SpmLeapCmdWaitSpm\n"
 
-#if 0
         // start the TCCR0B timer
         "ldi %[tmp],1\n"     // timer 0 start at fClk
         "out %[_TCCR0B],%[tmp]\n"    // set TCCR0B so off we go. This is time 0c.
-#endif
 
         // To call the smp instruction, we first need to write to the SPMCSR
         // register. The variable cmdReg holds the register that will be
@@ -286,6 +269,7 @@ void SpmLeapCmd(uint16_t addr, uint8_t spmCmd, uint16_t optValue) {
         "ldi r31, 0\n"    // z^reg to save. (1c)
         "ld %[tmp], Z\n"      // get the reg (2c)
         "push %[tmp]\n"      // saved it, now we can overwrite with spm command. (2c)
+        "push %[cmdReg]\n" // save cmdReg
 
         // Push the address that will be returned to from the spm instruction.
         "ldi r30,lo8(pm(SpmLeapCmdRet))\n" // (1c)
@@ -324,7 +308,8 @@ void SpmLeapCmd(uint16_t addr, uint8_t spmCmd, uint16_t optValue) {
 
         // Return from the bootloader, pop values from stack and return
         "SpmLeapCmdRet:\n"
-        "pop %[tmp]\n"                // restore command Reg.
+        "pop %[cmdReg]\n"             // restore command Reg address
+        "pop %[tmp]\n"                // restore command Reg value
         "mov r30, %[cmdReg]\n"
         "ldi r31,0\n"   // z^reg to save.
         "st Z,%[tmp]\n"     // pop the reg
@@ -361,23 +346,25 @@ void SpmLeapCmd(uint16_t addr, uint8_t spmCmd, uint16_t optValue) {
 // TODO: need to set this interrupt vector to the one that matches the
 // timer we will add later.
 ISR(TIMER0_COMPB_vect, ISR_NAKED) { // OCR0B
-// ISR(TIMER0_COMPB_vect) { // OCR0B
-    //PORTC&=~(1<<4);
-    // PINC|=(1<<4);
+
+    // while (1) {
+    //     PORTF ^= (_BV(6));
+    //     _delay_ms(500);
+    // }
 
     asm volatile(
         "ldi r30,0\n"
-        "out %0,r30\n"  // stop timer 0
-        "out %1,r30\n"  // reset timer 0.
+        "out %[_TCCR0B],r30\n"  // stop timer 0
+        "out %[_TCNT0],r30\n"  // reset timer 0.
         "ldi r30,7\n"
-        "out %2,r30\n"  // clear interrupts on timer 0.
+        "out %[_TIFR0],r30\n"  // clear interrupts on timer 0.
         "pop r31\n"     // don't care about overwiting Z because SpmLeap doesn't need it.
         "pop r30\n"
         "reti\n"
             :
-            : "I" (_SFR_IO_ADDR(TCCR0B)),
-            "I" (_SFR_IO_ADDR(TCNT0)),
-            "I" (_SFR_IO_ADDR(TIFR0))
+            : [_TCCR0B] "I" (_SFR_IO_ADDR(TCCR0B)),
+            [_TCNT0] "I" (_SFR_IO_ADDR(TCNT0)),
+            [_TIFR0] "I" (_SFR_IO_ADDR(TIFR0))
     );
 }
 
@@ -385,7 +372,7 @@ ISR(TIMER0_COMPB_vect, ISR_NAKED) { // OCR0B
 // * Loads the 128 bytes from `src` into the temporary buffer
 // * Erase the page at `dst`
 // * Writes the page at `dst`
-void ProgPage(uint8_t *src, uint16_t dst) {
+void ProgPage(const uint8_t *src, uint16_t dst) {
     uint8_t addr;
     uint16_t data = 0xffff;
 
@@ -421,27 +408,29 @@ void BootJacker(void) {
     uint8_t spmType = FindSpm();
 
     // if (spmType == SPM_TYPE_NONE) {
-    //     while (1) {
-    //         PORTF ^= _BV(6);
-    //         _delay_ms(1000);
-    //     }
-    // }
+    if (spmType != SPM_TYPE_OUT_IDEAL) {
+        // If we didn't find an SPM instruction, hang here and blink both
+        // LEDs.
+        while (1) {
+            PORTF ^= _BV(6);
+            PORTF ^= _BV(7);
+            _delay_ms(1000);
+        }
+    }
 
 
-    // TODO: find out what value to user here. Comments in SetupTimer0B suggest
-    // that the value 40 and/or 31 were used. Potentially will be different for
-    // ATmega32U4 anyway.
-
-#define kTestTimerWait 50
-// #define kTestTimerWait 31
-
+    sei();
+#define kTestTimerWait 40
     if (spmType == SPM_TYPE_STS_SECONDARY || spmType == SPM_TYPE_STS_IDEAL) {
         SetupTimer0B(kTestTimerWait);   // sts timing.
     } else {
         SetupTimer0B(kTestTimerWait-1); // out timing is one cycle less.
     }
 
-    SpmLeapCmd(0x7F80, kFlashSpmErase, 0x7F80);
+
+#define TEST_PAGE_ADDR 0x6F80
+
+    ProgPage(gBootloaderJmpVector, 0x7F80);
 
     cli();
     while (1);
@@ -475,7 +464,6 @@ void BootJacker(void) {
     //     ProgPage((uint8_t*)&_etext_place_holder, kMicroBootStart);
     // }
 
-    cli();
     // NOTE: Looks like this code setups up some values, then calls the function
     // _Upgrader which is used to actually write the payload using the code from
     // kMicroBootStart
@@ -509,10 +497,22 @@ int main(void) {
     DDRF |= _BV(7) | _BV(6);
     PORTF |= (_BV(7) | _BV(6)); // clear LED to begin with.
 
-    /* Enable change of interrupt vectors */
-    MCUCR = (1<<IVCE);
-    /* Move interrupts to boot flash section */
-    MCUCR = (1<<IVCE) | (0<<IVSEL);
+    {
+        // NOTE: JTD, PUD are also cleared here but we don't care in this case
+        /* Enable change of interrupt vectors */
+        MCUCR = (1<<IVCE);
+        /* Move interrupts to application flash section */
+        MCUCR = (0<<IVCE) | (0<<IVSEL);
+
+        if ( (MCUCR & (1<<IVSEL)) != 0 ) {
+            // Interrupts must be place at the start of flash. If that is not
+            // the case, then we hang here.
+            while (1) {
+                PORTF ^= (_BV(7));
+                _delay_ms(500);
+            }
+        }
+    }
 
     _delay_ms(100);
 
@@ -520,5 +520,6 @@ int main(void) {
 
     BootJacker();
 
+    cli();
     while (1);
 }

@@ -1,0 +1,9 @@
+
+-> 0xCFFF: rjmp -1
+
+-> 0x94f8: cli
+-> 0x9508: ret
+
+-> 0x95e8: spm
+i
+
