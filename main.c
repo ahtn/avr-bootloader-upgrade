@@ -1,11 +1,15 @@
-#include <avr/io.h>
+// The ideas used in this code are based off bootjacker:
+// http://oneweekwonder.blogspot.com.au/2014/07/bootjacker-amazing-avr-bootloader-hack.html
 
 #include <stdint.h>
 #include <stdbool.h>
 
+#include <avr/io.h>
+#include <avr/boot.h>
 #include <avr/pgmspace.h>
 #include <avr/interrupt.h>
 #include <avr/wdt.h>
+#include <util/atomic.h>
 #include <util/delay.h>
 
 #define kSpmCsr (_SFR_IO_ADDR(SPMCSR))
@@ -124,37 +128,6 @@ uint8_t search_for_spm(void) {
     return spmType;
 }
 
-uint16_t flash_lpm_data(uint16_t addr, uint8_t spmCmd) {
-    uint16_t val;
-    asm volatile(
-        "push r0\n" // save registers
-        "push r1\n"
-        "push r16\n"
-        "push r30\n"
-        "push r31\n"
-
-        "movw r30,%[addr]\n"  // set the addr to be written.
-        "1: in r16,%[SPM_CSR] \n" //
-        "sbrc r16,0\n"   //wait for operation complete.
-        "rjmp 1b\n"
-        "cli\n"
-        "out %[SPM_CSR],%[spmCmd]\n"
-        "lpm %[val], Z\n"     // now we start the load/erase/write.
-        "sei\n"
-
-        "pop r31\n" // restore registers
-        "pop r30\n"
-        "pop r16\n"
-        "pop r1\n"
-        "pop r0\n"
-            : [val] "=r" (val)          // %0
-            : [addr] "r" (addr),        // %1
-            [spmCmd] "r" (spmCmd),      // %2
-            [SPM_CSR] "I" (kSpmCsr)     // %3
-    );
-    return val;
-}
-
 #define BLB1_MASK 0x30 // controls access of bootloader section
 #define BLB0_MASK 0x0C // controls access of application section
 #define BLB_MASK 0x03 // controls access from external progarmmer
@@ -168,17 +141,27 @@ uint16_t flash_lpm_data(uint16_t addr, uint8_t spmCmd) {
 // This means we need full access to the bootloader (i.e. both bits
 // a BLB1 need to be unprogrammed).
 uint8_t check_bootloader_lock_bits(void) {
-    uint16_t bootLockBits;
-    bootLockBits = flash_lpm_data(1, kFlashSpmBlbSet);
+    // uint8_t lfuse;
+    // uint8_t hfuse;
+    // uint8_t efuse;
+    uint8_t lock_bits;
 
-    if( (bootLockBits & BLB1_MASK) != BLB1_MASK) {
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+        // TODO: check other fuse bits
+        // lfuse = boot_lock_fuse_bits_get(GET_LOW_FUSE_BITS);
+        // hfuse = boot_lock_fuse_bits_get(GET_HIGH_FUSE_BITS);
+        // efuse = boot_lock_fuse_bits_get(GET_EXTENDED_FUSE_BITS);
+        lock_bits = boot_lock_fuse_bits_get(GET_LOCK_BITS);
+    }
+
+    if( (lock_bits & BLB1_MASK) != BLB1_MASK) {
         return -1;
     }
 
     return 0;
 }
 
-void SetupTimer0B(uint8_t cycles) {
+void setup_timer0(uint8_t cycles) {
 
 #if defined (__AVR_ATmega32U4__)
     TCCR0B = 0;       // stop the timer.
@@ -407,13 +390,10 @@ void bootloader_upgrade(void) {
 
     sei(); // Need interrupts enabled
     if (spmType == SPM_TYPE_STS_SECONDARY || spmType == SPM_TYPE_STS_IDEAL) {
-        SetupTimer0B(SPM_LEAP_CYCLE_COUNT);   // sts timing.
+        setup_timer0(SPM_LEAP_CYCLE_COUNT);   // sts timing.
     } else {
-        SetupTimer0B(SPM_LEAP_CYCLE_COUNT-1); // out timing is one cycle less.
+        setup_timer0(SPM_LEAP_CYCLE_COUNT-1); // out timing is one cycle less.
     }
-
-
-#define TEST_PAGE_ADDR 0x6F80
 
     flash_write_page(gBootloaderJmpVector, 0x7E00, sizeof(gBootloaderJmpVector));
 
