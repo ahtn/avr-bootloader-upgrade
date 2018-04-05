@@ -41,9 +41,12 @@ AVRDUDE_CMD=avrdude -p $(MCU) -c usbasp
 
 CFLAGS +=
 
+BOOTLOADER_DATA_SRC = ATmega32u4_atmel_dfu.c
+
 # List C source files here.
 C_SRC += \
-	main.c
+	main.c \
+	$(BOOTLOADER_DATA_SRC) \
 	# bootjack.c
 	 # src/bootjack.c
 

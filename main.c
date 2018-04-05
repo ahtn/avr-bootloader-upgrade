@@ -19,7 +19,11 @@
 
 #define BOOTLOADER_START 0x7000
 #define BOOTLOADER_END 0x8000
-#define kMicroBootStart 0x7f80
+#define BOOTLOADER_SIZE (BOOTLOADER_END-BOOTLOADER_START)
+// We prefer to write our custom SPM instruction in the last page of the
+// bootloader. If we can't write to that block (because the SPM instruction
+// itself is inside it, then write to the first block).
+#define IDEAL_BLOCK_ADDR (BOOTLOADER_END - SPM_PAGESIZE)
 
 #define kStsIns 0x9200
 #define kStsRegMask 0x01f0
@@ -55,12 +59,15 @@ typedef enum {
 uint16_t gSpmSequenceAddr;
 
 const uint8_t gBootloaderJmpVector[] = {
-    0x0c, 0x94, 0xc0, 0x3f, // A vector to the 128b mini Bootloader.
     0x57, 0xbf, 0xe8, 0x95, // An out, spm command.
-    0x00, 0x00              // A nop instruction.
+    0x00, 0x00,             // nop
+    0xFF, 0xCF,             // rjmp -1 (infinite loop)
 };
 
-uint8_t search_for_spm(void) {
+extern const uint16_t bootloader_size;
+extern const __flash uint8_t bootloader_data[];
+
+uint8_t find_spm(void) {
     uint8_t spmType = SPM_TYPE_NONE;
     uint16_t addr;
 
@@ -78,7 +85,7 @@ uint8_t search_for_spm(void) {
             word_1 == kSpmCsrMem &&
             word_2 == kSpmIns
         ) {
-            if (addr+8 < kMicroBootStart) {
+            if (addr+8 < IDEAL_BLOCK_ADDR) {
                 spmType = SPM_TYPE_STS_IDEAL;
                 gSpmSequenceAddr = addr;
                 break;
@@ -110,7 +117,7 @@ uint8_t search_for_spm(void) {
             (word_0 & ~kOutSpmCsrRegMask) == kOutSpmCsrIns &&
             word_1 == kSpmIns
         ) {
-            if (addr+6 < kMicroBootStart) {
+            if (addr+6 < IDEAL_BLOCK_ADDR) {
                 spmType = SPM_TYPE_OUT_IDEAL;
                 gSpmSequenceAddr = addr;
                 break;
@@ -187,7 +194,8 @@ void setup_timer0(uint8_t cycles) {
 // Found this value by experimentation.
 // This value should be chosen so the timer0 interrupt will be called on the
 // instruction immediately following the SPM instruction.
-#define SPM_LEAP_CYCLE_COUNT 40
+#define SPM_LEAP_CYCLES_USING_STS 40
+#define SPM_LEAP_CYCLES_USING_OUT 39
 
 // This function will call the SPM instruction we found in the bootloader
 // while setting `R0:R1` <- `optValue` and `Z` <- `addr`.
@@ -367,16 +375,22 @@ void flash_write_page(const uint8_t *src, uint16_t dst, uint8_t length) {
 }
 
 void bootloader_upgrade(void) {
+    uint16_t our_spm_page;
 
     // TODO: hang and print error message print error message/LEDs
     // Check the bootloader lock bits, if incompatible lock bits are found
     // then don't run the bootloader upgrade procedure
     if (check_bootloader_lock_bits()) {
-        while (true) { }
+        while (1) {
+            PORTF ^= _BV(6);
+            _delay_ms(500);
+            PORTF ^= _BV(7);
+            _delay_ms(500);
+        }
     }
 
     // Find the SPM instruction and what the surrounding instructions are.
-    uint8_t spmType = search_for_spm();
+    uint8_t spmType = find_spm();
 
     if (spmType == SPM_TYPE_NONE) {
         // If we didn't find an SPM instruction, hang here and blink both
@@ -388,17 +402,131 @@ void bootloader_upgrade(void) {
         }
     }
 
+    // Need to try and disable any interrupt source that the bootloader my have
+    // setup (really the bootloader shouldn't change these from their default
+    // values).
+#ifdef __AVR_ATmega32U4__
+
+    // Disable all other interrupt sources
+	TIMSK0 = 0;	// Disable timer 0 interrupts
+	TIFR0 = 0x07;
+	TIMSK1 = 0;	// Disable timer 1 interrupts
+	TIFR1 = 0x17;
+	EIMSK = 0;	// Disable external interrupts
+	EIFR = 0x03;
+	PCICR = 0;	// all Pin Change interrupts off (Tape uses them).
+	PCIFR = 0x01;	// pending pin change interrupts cleared.
+
+    USBCON = 0;
+    USBINT = (1<<VBUSTI);
+
+    UDIEN = 0;
+    UDINT = 0xff;
+#else
+#error "Unsupported/tested microcontroller"
+#endif
+
     sei(); // Need interrupts enabled
+
     if (spmType == SPM_TYPE_STS_SECONDARY || spmType == SPM_TYPE_STS_IDEAL) {
-        setup_timer0(SPM_LEAP_CYCLE_COUNT);   // sts timing.
+        setup_timer0(SPM_LEAP_CYCLES_USING_STS);   // sts timing.
+    } else if (spmType == SPM_TYPE_OUT_SECONARY || spmType == SPM_TYPE_OUT_IDEAL) {
+        setup_timer0(SPM_LEAP_CYCLES_USING_OUT); // out timing is one cycle less.
     } else {
-        setup_timer0(SPM_LEAP_CYCLE_COUNT-1); // out timing is one cycle less.
     }
 
-    flash_write_page(gBootloaderJmpVector, 0x7E00, sizeof(gBootloaderJmpVector));
+    // if (spmType == SPM_TYPE_STS_SECONDARY || spmType == SPM_TYPE_OUT_SECONARY) {
+    //     our_spm_page = BOOTLOADER_START;
+    // } else {
+    //     our_spm_page = BOOTLOADER_END - SPM_PAGE;
+    // }
+    our_spm_page = IDEAL_BLOCK_ADDR;
 
-    // TODO: replace the bootloader with another bootloader that is embedded
-    // in the program HEX file.
+    flash_write_page(
+        gBootloaderJmpVector,
+        our_spm_page,
+        sizeof(gBootloaderJmpVector)
+    );
+
+    // We write a custom block with an SPM instruction as the last page of flash.
+    // It uses an out instruction, so setup the timer appropriately.
+    setup_timer0(SPM_LEAP_CYCLES_USING_OUT);
+    gSpmSequenceAddr = our_spm_page;
+
+    // We can now overwrite the bootloader with our replacement bootloader.
+
+
+    {
+        // uint16_t boot_pos = 0;
+        // while (boot_pos < sizeof(bootloader_data)) {
+        //     uint8_t write_size = 0;
+        //     uint8_t page_data[SPM_PAGESIZE];
+        //     for (
+        //         ;
+        //         (write_size < SPM_PAGESIZE) && (boot_pos+write_size < sizeof(bootloader_data));
+        //         ++write_size
+        //     ) {
+        //         page_data[write_size] = bootloader_data[boot_pos+write_size];
+        //     }
+
+        //     // The data is now loaded into ram, write the page
+        //     flash_write_page(
+        //         page_data,
+        //         BOOTLOADER_START + boot_pos,
+        //         write_size
+        //     );
+        //     boot_pos += write_size;
+        // }
+        uint16_t boot_pos = 0;
+        while (
+            boot_pos < bootloader_size &&
+            (boot_pos < (BOOTLOADER_END-BOOTLOADER_START)-SPM_PAGESIZE)
+        ) {
+            uint8_t page_data[SPM_PAGESIZE];
+            for (int i = 0; i < SPM_PAGESIZE; ++i) {
+                page_data[i] = bootloader_data[boot_pos + i];
+            }
+
+            // The data is now loaded into ram, write the page
+            flash_write_page(
+                page_data,
+                BOOTLOADER_START + boot_pos,
+                SPM_PAGESIZE
+            );
+            boot_pos += SPM_PAGESIZE;
+        }
+
+        // To write the page at `BOOTLOADER_END-SPM_PAGESIZE` we can use the
+        // SPM instruction in the final page (i.e. the currently executing page).
+        // So what we want to do is find another SPM instruction that we wrote
+        // inside the bootloader elsewhere (obviously if there isn't any this
+        // won't work).
+        // TODO: check the bootloader_data meets this requirement before
+        // attempting to write the bootloader.
+        {
+            // Find the SPM instruction and what the surrounding instructions are.
+            uint8_t spmType = find_spm();
+
+            // Set the timer for the new instruction sequence
+            if (spmType == SPM_TYPE_STS_SECONDARY || spmType == SPM_TYPE_STS_IDEAL) {
+                setup_timer0(SPM_LEAP_CYCLES_USING_STS);   // sts timing.
+            } else {
+                setup_timer0(SPM_LEAP_CYCLES_USING_OUT); // out timing is one cycle less.
+            }
+
+            // load the final page from flash
+            uint8_t page_data[SPM_PAGESIZE];
+            for (int i = 0; i < SPM_PAGESIZE; ++i) {
+                page_data[i] = bootloader_data[BOOTLOADER_SIZE-SPM_PAGESIZE + i];
+            }
+
+            flash_write_page(
+                page_data,
+                BOOTLOADER_END - SPM_PAGESIZE,
+                SPM_PAGESIZE
+            );
+        }
+    }
 }
 
 #define CPU_PRESCALE(n) (CLKPR = 0x80, CLKPR = (n))
@@ -414,6 +542,7 @@ int main(void) {
     DDRF |= _BV(7) | _BV(6);
     // Turn LEDs off as initial state
     PORTF &= ~(_BV(7) | _BV(6));
+
 
     // We want to make sure that interrupts are executed from the application
     // section not the bootloader. In case the bootloader set IVSEL to 1, we
