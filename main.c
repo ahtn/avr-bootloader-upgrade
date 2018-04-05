@@ -454,29 +454,7 @@ void bootloader_upgrade(void) {
     gSpmSequenceAddr = our_spm_page;
 
     // We can now overwrite the bootloader with our replacement bootloader.
-
-
     {
-        // uint16_t boot_pos = 0;
-        // while (boot_pos < sizeof(bootloader_data)) {
-        //     uint8_t write_size = 0;
-        //     uint8_t page_data[SPM_PAGESIZE];
-        //     for (
-        //         ;
-        //         (write_size < SPM_PAGESIZE) && (boot_pos+write_size < sizeof(bootloader_data));
-        //         ++write_size
-        //     ) {
-        //         page_data[write_size] = bootloader_data[boot_pos+write_size];
-        //     }
-
-        //     // The data is now loaded into ram, write the page
-        //     flash_write_page(
-        //         page_data,
-        //         BOOTLOADER_START + boot_pos,
-        //         write_size
-        //     );
-        //     boot_pos += write_size;
-        // }
         uint16_t boot_pos = 0;
         while (
             boot_pos < bootloader_size &&
@@ -496,7 +474,7 @@ void bootloader_upgrade(void) {
             boot_pos += SPM_PAGESIZE;
         }
 
-        // To write the page at `BOOTLOADER_END-SPM_PAGESIZE` we can use the
+        // To write the page at `BOOTLOADER_END-SPM_PAGESIZE` we can not use the
         // SPM instruction in the final page (i.e. the currently executing page).
         // So what we want to do is find another SPM instruction that we wrote
         // inside the bootloader elsewhere (obviously if there isn't any this
