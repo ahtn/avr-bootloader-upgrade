@@ -1,0 +1,1 @@
+BOOTLOADER_DATA_SRC = $(BOARD_DIR)/$(BOARD)/kp_boot_32u4.c

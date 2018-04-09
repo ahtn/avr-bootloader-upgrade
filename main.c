@@ -17,13 +17,10 @@
 
 #define IOAddrInsMask(aPort) (((aPort&0x30)<<5)|(aPort&7))
 
-#define BOOTLOADER_START 0x7000
-#define BOOTLOADER_END 0x8000
-#define BOOTLOADER_SIZE (BOOTLOADER_END-BOOTLOADER_START)
 // We prefer to write our custom SPM instruction in the last page of the
 // bootloader. If we can't write to that block (because the SPM instruction
 // itself is inside it, then write to the first block).
-#define IDEAL_BLOCK_ADDR (BOOTLOADER_END - SPM_PAGESIZE)
+#define IDEAL_BLOCK_ADDR (FLASHEND - SPM_PAGESIZE + 1)
 
 #define kStsIns 0x9200
 #define kStsRegMask 0x01f0
@@ -57,6 +54,8 @@ typedef enum {
 } spm_type;
 
 uint16_t gSpmSequenceAddr;
+uint16_t boot_start;
+uint16_t boot_end;
 
 const uint8_t gBootloaderJmpVector[] = {
     0x57, 0xbf, 0xe8, 0x95, // An out, spm command.
@@ -65,13 +64,13 @@ const uint8_t gBootloaderJmpVector[] = {
 };
 
 extern const uint16_t bootloader_size;
-extern const __flash uint8_t bootloader_data[];
+extern const PROGMEM uint8_t bootloader_data[];
 
 uint8_t find_spm(void) {
     uint8_t spmType = SPM_TYPE_NONE;
     uint16_t addr;
 
-    for( addr=BOOTLOADER_START; addr < BOOTLOADER_END; addr+=2) {
+    for( addr=boot_start; addr < boot_end; addr+=2) {
         if ((spmType & 1) == 0) {
             break;
         }
@@ -363,7 +362,7 @@ ISR(TIMER0_COMPB_vect, ISR_NAKED) { // OCR0B
 // Write the data in src to the address at
 void flash_write_page(const uint8_t *src, uint16_t dst, uint8_t length) {
     // Fill the temporary buffer for the page write
-    for(uint8_t addr=0; addr < length; addr+=2) {        // 64 words.
+    for(uint16_t addr=0; addr < length; addr+=2) {        // 64 words.
         uint16_t data = *((uint16_t*)src);
         spm_leap_cmd(dst+addr, kFlashSpmEn, data);
         src+=2; // advance to next word
@@ -374,8 +373,35 @@ void flash_write_page(const uint8_t *src, uint16_t dst, uint8_t length) {
     spm_leap_cmd(dst, kFlashSpmWritePage, 0);
 }
 
+void show_success(void) {
+    cli();
+    while (1) {
+        PORTF ^= (_BV(7));
+        _delay_ms(100);
+    }
+}
+
 void bootloader_upgrade(void) {
     uint16_t our_spm_page;
+
+    boot_start = (FLASHEND - bootloader_size)+1;
+    boot_end = boot_start + bootloader_size;
+
+    // Check if the bootloader has already been programmed
+    {
+        uint8_t is_match = 1;
+        for (uint16_t i = 0; i < bootloader_size; ++i) {
+            if (pgm_read_byte(bootloader_data+i) != pgm_read_byte(boot_start + i) ) {
+                is_match = 0;
+                break;
+            }
+        }
+
+        if (is_match) {
+            show_success();
+        }
+    }
+
 
     // TODO: hang and print error message print error message/LEDs
     // Check the bootloader lock bits, if incompatible lock bits are found
@@ -395,11 +421,6 @@ void bootloader_upgrade(void) {
     if (spmType == SPM_TYPE_NONE) {
         // If we didn't find an SPM instruction, hang here and blink both
         // LEDs.
-        while (1) {
-            PORTF ^= _BV(6);
-            PORTF ^= _BV(7);
-            _delay_ms(1000);
-        }
     }
 
     // Need to try and disable any interrupt source that the bootloader my have
@@ -432,7 +453,6 @@ void bootloader_upgrade(void) {
         setup_timer0(SPM_LEAP_CYCLES_USING_STS);   // sts timing.
     } else if (spmType == SPM_TYPE_OUT_SECONARY || spmType == SPM_TYPE_OUT_IDEAL) {
         setup_timer0(SPM_LEAP_CYCLES_USING_OUT); // out timing is one cycle less.
-    } else {
     }
 
     // if (spmType == SPM_TYPE_STS_SECONDARY || spmType == SPM_TYPE_OUT_SECONARY) {
@@ -453,25 +473,34 @@ void bootloader_upgrade(void) {
     setup_timer0(SPM_LEAP_CYCLES_USING_OUT);
     gSpmSequenceAddr = our_spm_page;
 
+    flash_write_page(
+        gBootloaderJmpVector,
+        0x7000,
+        sizeof(gBootloaderJmpVector)
+    );
+
     // We can now overwrite the bootloader with our replacement bootloader.
     {
         uint16_t boot_pos = 0;
+
         while (
             boot_pos < bootloader_size &&
-            (boot_pos < (BOOTLOADER_END-BOOTLOADER_START)-SPM_PAGESIZE)
+            (boot_pos < (bootloader_size-SPM_PAGESIZE))
         ) {
             uint8_t page_data[SPM_PAGESIZE];
-            for (int i = 0; i < SPM_PAGESIZE; ++i) {
-                page_data[i] = bootloader_data[boot_pos + i];
+
+            for (uint16_t i = 0; i < SPM_PAGESIZE; ++i) {
+                page_data[i] = pgm_read_byte(bootloader_data+(boot_pos + i));
             }
 
             // The data is now loaded into ram, write the page
             flash_write_page(
                 page_data,
-                BOOTLOADER_START + boot_pos,
+                boot_start + boot_pos,
                 SPM_PAGESIZE
             );
             boot_pos += SPM_PAGESIZE;
+
         }
 
         // To write the page at `BOOTLOADER_END-SPM_PAGESIZE` we can not use the
@@ -494,13 +523,13 @@ void bootloader_upgrade(void) {
 
             // load the final page from flash
             uint8_t page_data[SPM_PAGESIZE];
-            for (int i = 0; i < SPM_PAGESIZE; ++i) {
-                page_data[i] = bootloader_data[BOOTLOADER_SIZE-SPM_PAGESIZE + i];
+            for (uint16_t i = 0; i < SPM_PAGESIZE; ++i) {
+                page_data[i] = pgm_read_byte(bootloader_data+(bootloader_size-SPM_PAGESIZE + i));
             }
 
             flash_write_page(
                 page_data,
-                BOOTLOADER_END - SPM_PAGESIZE,
+                boot_end - SPM_PAGESIZE,
                 SPM_PAGESIZE
             );
         }
@@ -545,6 +574,5 @@ int main(void) {
     bootloader_upgrade();
 
     // If we finish, wait forever
-    cli();
-    while(1);
+    show_success();
 }

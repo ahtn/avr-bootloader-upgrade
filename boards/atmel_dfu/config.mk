@@ -1,0 +1,1 @@
+BOOTLOADER_DATA_SRC = $(BOARD_DIR)/$(BOARD)/ATmega32u4_atmel_dfu.c

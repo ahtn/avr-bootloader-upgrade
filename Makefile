@@ -41,7 +41,8 @@ AVRDUDE_CMD=avrdude -p $(MCU) -c usbasp
 
 CFLAGS +=
 
-BOOTLOADER_DATA_SRC = ATmega32u4_atmel_dfu.c
+# Set in config.mk of boards directory
+# BOOTLOADER_DATA_SRC =
 
 # List C source files here.
 C_SRC += \
@@ -63,6 +64,8 @@ EXTRAINCDIRS =
 
 # Compiler flag to set the C Standard level.
 CSTANDARD = -std=gnu99
+
+CFLAGS += $(INC_PATHS)
 
 CDEFS +=
 ADEFS +=
