@@ -2,6 +2,19 @@
 
 #include <avr/pgmspace.h>
 
+typedef uint16_t magic_t;
+#define MAGIC_ADDRESS (0x200-4)
+#define MAGIC_ENTER_BOOT (0xda54)
+#define MAGIC_ENTER_APPL (~0xda54)
+void enter_bootloader(void) {
+    cli();
+    wdt_reset();
+    wdt_enable(WDTO_30MS);
+    *(magic_t*)(MAGIC_ADDRESS) = MAGIC_ENTER_BOOT;
+
+    while (1);
+}
+
 // 4kb version used for replacing pro micro bootloader
 const uint16_t bootloader_size = 4096;
 

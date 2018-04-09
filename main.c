@@ -44,6 +44,28 @@
 #define kFlashSpmRwws (kFlashSpmRwwsReMask|kFlashSpmEnMask)
 #define kFlashSpmRwwsBusy (kFlashSpmRwwsBusyMask)
 
+// Debug LEDs
+#define LED0_DDR DDRB
+#define LED0_PORT PORTB
+#define LED0_BIT _BV(0)
+
+#define LED1_DDR DDRD
+#define LED1_PORT PORTD
+#define LED1_BIT _BV(5)
+
+#define LED0_SETUP (LED0_DDR |= LED0_BIT)
+#define LED1_SETUP (LED1_DDR |= LED1_BIT)
+
+#define LED0_ON (LED0_PORT &= ~LED0_BIT)
+#define LED1_ON (LED1_PORT &= ~LED1_BIT)
+
+#define LED0_OFF (LED0_PORT |= LED0_BIT)
+#define LED1_OFF (LED1_PORT |= LED1_BIT)
+
+#define LED0_TOGGLE (LED0_PORT ^= LED0_BIT)
+#define LED1_TOGGLE (LED1_PORT ^= LED1_BIT)
+
+
 // NOTE: Uses even numbers for ideal configurations, odd numbers for suboptimal
 typedef enum {
     SPM_TYPE_STS_IDEAL = 0,
@@ -333,15 +355,6 @@ void spm_leap_cmd(uint16_t addr, uint8_t spmCmd, uint16_t optValue) {
 // TODO: need to set this interrupt vector to the one that matches the
 // timer we will add later.
 ISR(TIMER0_COMPB_vect, ISR_NAKED) { // OCR0B
-
-#if 0
-    // Debug code to check if the ISR is being called
-    while (1) {
-        PORTF ^= (_BV(6));
-        _delay_ms(500);
-    }
-#endif
-
     asm volatile(
         "ldi r30,0\n"
         "out %[_TCCR0B],r30\n"  // stop timer 0
@@ -375,11 +388,12 @@ void flash_write_page(const uint8_t *src, uint16_t dst, uint8_t length) {
 
 void show_success(void) {
     cli();
+    LED0_ON;
     while (1) {
-        PORTF ^= (_BV(7));
-        _delay_ms(100);
     }
 }
+
+void enter_bootloader(void);
 
 void bootloader_upgrade(void) {
     uint16_t our_spm_page;
@@ -398,7 +412,9 @@ void bootloader_upgrade(void) {
         }
 
         if (is_match) {
-            show_success();
+            cli();
+            enter_bootloader();
+            while(1);
         }
     }
 
@@ -408,9 +424,9 @@ void bootloader_upgrade(void) {
     // then don't run the bootloader upgrade procedure
     if (check_bootloader_lock_bits()) {
         while (1) {
-            PORTF ^= _BV(6);
+            LED0_TOGGLE;
             _delay_ms(500);
-            PORTF ^= _BV(7);
+            LED1_TOGGLE;
             _delay_ms(500);
         }
     }
@@ -545,11 +561,11 @@ int main(void) {
     // Disable watch dog if it is active
     wdt_disable();
 
-    // Enable debug LEDs
-    DDRF |= _BV(7) | _BV(6);
-    // Turn LEDs off as initial state
-    PORTF &= ~(_BV(7) | _BV(6));
+    LED0_SETUP;
+    LED1_SETUP;
 
+    LED0_OFF;
+    LED1_OFF;
 
     // We want to make sure that interrupts are executed from the application
     // section not the bootloader. In case the bootloader set IVSEL to 1, we
@@ -558,15 +574,6 @@ int main(void) {
         // NOTE: JTD, PUD are also cleared here but we don't care
         MCUCR = (1<<IVCE); // Enable change of interrupt vectors
         MCUCR = (0<<IVCE) | (0<<IVSEL); // Clear IVSEL, i.e. interrupts from app section
-
-        if ( (MCUCR & (1<<IVSEL)) != 0 ) {
-            // Interrupts must be place at the start of flash. If that is not
-            // the case, then we hang here.
-            while (1) {
-                PORTF ^= (_BV(7));
-                _delay_ms(500);
-            }
-        }
     }
 
     _delay_ms(100);
